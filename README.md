@@ -27,7 +27,7 @@ sudo apt-get install golang-go gobuster jq parallel curl wget
 # brew install go gobuster jq parallel curl wget
 
 # Make scripts executable
-chmod +x gobl3d.sh module.bash
+chmod +x gobl3d module.bash
 ```
 
 ## File Structure
