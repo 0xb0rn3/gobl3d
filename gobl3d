@@ -1,0 +1,426 @@
+#!/usr/bin/env bash
+# Tactical Bug Bounty Enumeration Suite
+# Author: oxbv1
+
+set -euo pipefail
+
+# Colors for minimal UI
+R='\033[0;31m'
+G='\033[0;32m'
+Y='\033[1;33m'
+B='\033[0;34m'
+M='\033[0;35m'
+C='\033[0;36m'
+W='\033[1;37m'
+NC='\033[0m'
+
+# Global variables
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+GO_MODULE="$SCRIPT_DIR/module.go"
+BASH_MODULE="$SCRIPT_DIR/module.bash"
+GO_BINARY="$SCRIPT_DIR/gobl3d"
+CONFIG_FILE="$SCRIPT_DIR/config.json"
+TARGET=""
+SCAN_MODE=""
+OS_TYPE=""
+ARCH_TYPE=""
+
+# Detect OS and architecture
+detect_system() {
+    OS_TYPE=$(uname -s | tr '[:upper:]' '[:lower:]')
+    ARCH_TYPE=$(uname -m)
+    
+    case "$ARCH_TYPE" in
+        x86_64|amd64) ARCH_TYPE="amd64" ;;
+        i386|i686) ARCH_TYPE="386" ;;
+        armv7l) ARCH_TYPE="arm" ;;
+        aarch64|arm64) ARCH_TYPE="arm64" ;;
+    esac
+}
+
+# Minimal banner
+show_banner() {
+    clear
+    echo -e "${M}╔══════════════════════════════════════╗${NC}"
+    echo -e "${M}║${W}     gobl3d ${Y}v1.0 ${G}[${C}TACTICAL${G}]${W}        ║${NC}"
+    echo -e "${M}║${W}   Enumeration Wrapper            ║${NC}"
+    echo -e "${M}╚══════════════════════════════════════╝${NC}"
+    echo ""
+}
+
+# Dependency installation with minimal output
+install_dependencies() {
+    echo -e "${Y}[${G}•${Y}] ${W}Setting up...${NC}"
+    
+    # Detect package manager
+    if command -v apt-get &> /dev/null; then
+        PKG_MANAGER="apt-get"
+        INSTALL_CMD="apt-get update -qq && apt-get install -y -qq"
+    elif command -v yum &> /dev/null; then
+        PKG_MANAGER="yum"
+        INSTALL_CMD="yum install -y -q"
+    elif command -v pacman &> /dev/null; then
+        PKG_MANAGER="pacman"
+        INSTALL_CMD="pacman -S --noconfirm --quiet"
+    elif command -v brew &> /dev/null; then
+        PKG_MANAGER="brew"
+        INSTALL_CMD="brew install"
+    else
+        echo -e "${R}[${Y}!${R}] ${W}Unsupported package manager${NC}"
+        exit 1
+    fi
+    
+    # Install Go if not present
+    if ! command -v go &> /dev/null; then
+        case "$PKG_MANAGER" in
+            apt-get) sudo $INSTALL_CMD golang-go &> /dev/null ;;
+            yum) sudo $INSTALL_CMD golang &> /dev/null ;;
+            pacman) sudo $INSTALL_CMD go &> /dev/null ;;
+            brew) $INSTALL_CMD go &> /dev/null ;;
+        esac
+    fi
+    
+    # Install gobuster if not present
+    if ! command -v gobuster &> /dev/null; then
+        case "$PKG_MANAGER" in
+            apt-get) sudo $INSTALL_CMD gobuster &> /dev/null ;;
+            yum) sudo $INSTALL_CMD gobuster &> /dev/null ;;
+            pacman) sudo $INSTALL_CMD gobuster &> /dev/null ;;
+            brew) $INSTALL_CMD gobuster &> /dev/null ;;
+        esac
+    fi
+    
+    # Install other dependencies
+    local deps=("jq" "parallel" "curl" "wget")
+    for dep in "${deps[@]}"; do
+        if ! command -v "$dep" &> /dev/null; then
+            case "$PKG_MANAGER" in
+                apt-get) sudo $INSTALL_CMD "$dep" &> /dev/null ;;
+                yum) sudo $INSTALL_CMD "$dep" &> /dev/null ;;
+                pacman) sudo $INSTALL_CMD "$dep" &> /dev/null ;;
+                brew) $INSTALL_CMD "$dep" &> /dev/null ;;
+            esac
+        fi
+    done
+    
+    echo -e "${G}[${Y}✓${G}] ${W}Dependencies ready${NC}"
+}
+
+# Compile Go module
+compile_go_module() {
+    if [[ -f "$GO_MODULE" ]]; then
+        echo -e "${Y}[${G}•${Y}] ${W}Compiling Go module...${NC}"
+        
+        cd "$SCRIPT_DIR"
+        export GOOS="$OS_TYPE"
+        export GOARCH="$ARCH_TYPE"
+        
+        if go build -o "$GO_BINARY" "$GO_MODULE" &> /dev/null; then
+            chmod +x "$GO_BINARY"
+            echo -e "${G}[${Y}✓${G}] ${W}Go module compiled${NC}"
+        else
+            echo -e "${R}[${Y}!${R}] ${W}Failed to compile Go module${NC}"
+            exit 1
+        fi
+    else
+        echo -e "${R}[${Y}!${R}] ${W}Go module not found: $GO_MODULE${NC}"
+        exit 1
+    fi
+}
+
+# Create default config template
+create_config_template() {
+    cat > "$CONFIG_FILE" << 'EOF'
+{
+  "target": "https://your-target.com",
+  "wordlists": [
+    "/usr/share/wordlists/dirb/common.txt",
+    "/opt/SecLists/Discovery/Web-Content/directory-list-2.3-medium.txt",
+    "/usr/share/wordlists/dirbuster/directory-list-2.3-medium.txt"
+  ],
+  "extensions": ["php", "html", "txt", "js", "asp", "aspx", "jsp", "zip", "bak"],
+  "threads": 30,
+  "delay": "100ms",
+  "timeout": "10s",
+  "output_dir": "./gobl3d_results",
+  "skip_ssl": true,
+  "follow_redirects": true,
+  "user_agent": "Mozilla/5.0 (compatible; gobl3d/1.0)",
+  "status_codes": ["200", "301", "302", "401", "403"],
+  "exclude_codes": ["404", "500"]
+}
+EOF
+}
+
+# Edit config with user input
+edit_config() {
+    echo -e "${Y}[${G}•${Y}] ${W}Configure scan parameters${NC}"
+    echo ""
+    
+    # Get target
+    while [[ -z "$TARGET" ]]; do
+        echo -ne "${B}[${Y}?${B}] ${W}Target URL: ${NC}"
+        read -r TARGET
+        if [[ ! "$TARGET" =~ ^https?:// ]]; then
+            TARGET="https://$TARGET"
+        fi
+    done
+    
+    # Update config with target
+    jq --arg target "$TARGET" '.target = $target' "$CONFIG_FILE" > "${CONFIG_FILE}.tmp" && mv "${CONFIG_FILE}.tmp" "$CONFIG_FILE"
+    
+    # Ask for modifications
+    echo -ne "${B}[${Y}?${B}] ${W}Edit advanced config? (y/N): ${NC}"
+    read -r -n 1 edit_choice
+    echo ""
+    
+    if [[ "$edit_choice" =~ ^[Yy]$ ]]; then
+        if command -v nano &> /dev/null; then
+            nano "$CONFIG_FILE"
+        elif command -v vim &> /dev/null; then
+            vim "$CONFIG_FILE"
+        elif command -v vi &> /dev/null; then
+            vi "$CONFIG_FILE"
+        else
+            echo -e "${Y}[${G}•${Y}] ${W}Manual edit: $CONFIG_FILE${NC}"
+            echo -e "${Y}[${G}•${Y}] ${W}Press Enter when done...${NC}"
+            read -r
+        fi
+    fi
+}
+
+# Tactical menu
+show_menu() {
+    echo -e "${W}╔═══════════════════════════════════════════╗${NC}"
+    echo -e "${W}║${G} [1] ${W}Quick Recon     ${Y}│${W} Fast discovery     ${W}║${NC}"
+    echo -e "${W}║${G} [2] ${W}Comprehensive   ${Y}│${W} Deep enumeration  ${W}║${NC}"
+    echo -e "${W}║${G} [3] ${W}Config Setup    ${Y}│${W} Modify settings   ${W}║${NC}"
+    echo -e "${W}║${G} [4] ${W}Integration     ${Y}│${W} Tool chaining     ${W}║${NC}"
+    echo -e "${W}║${G} [5] ${W}Exit            ${Y}│${W} Quit program      ${W}║${NC}"
+    echo -e "${W}╚═══════════════════════════════════════════╝${NC}"
+    echo ""
+    echo -ne "${B}[${Y}?${B}] ${W}Select option: ${NC}"
+}
+
+# Quick reconnaissance
+quick_recon() {
+    echo -e "${Y}[${G}•${Y}] ${W}Quick reconnaissance mode${NC}"
+    
+    # Get target if not set
+    if [[ -z "$TARGET" ]]; then
+        echo -ne "${B}[${Y}?${B}] ${W}Target URL: ${NC}"
+        read -r TARGET
+        if [[ ! "$TARGET" =~ ^https?:// ]]; then
+            TARGET="https://$TARGET"
+        fi
+    fi
+    
+    echo -e "${Y}[${G}•${Y}] ${W}Starting quick scan on: ${G}$TARGET${NC}"
+    
+    # Run bash module with quick settings
+    chmod +x "$BASH_MODULE"
+    "$BASH_MODULE" \
+        --target "$TARGET" \
+        --threads 20 \
+        --timeout 5s \
+        --dirs-only \
+        --no-recursive \
+        --extensions "php,html,txt,js" \
+        --output "./gobl3d_quick_$(date +%Y%m%d_%H%M%S)"
+}
+
+# Comprehensive scan
+comprehensive_scan() {
+    echo -e "${Y}[${G}•${Y}] ${W}Comprehensive scan mode${NC}"
+    
+    # Ensure config exists
+    if [[ ! -f "$CONFIG_FILE" ]]; then
+        create_config_template
+    fi
+    
+    # Edit config
+    edit_config
+    
+    echo -e "${Y}[${G}•${Y}] ${W}Starting comprehensive scan...${NC}"
+    
+    # Run both modules
+    echo -e "${Y}[${G}•${Y}] ${W}Phase 1: Go module execution${NC}"
+    "$GO_BINARY" -config "$CONFIG_FILE"
+    
+    echo -e "${Y}[${G}•${Y}] ${W}Phase 2: Bash module execution${NC}"
+    TARGET=$(jq -r '.target' "$CONFIG_FILE")
+    chmod +x "$BASH_MODULE"
+    "$BASH_MODULE" \
+        --target "$TARGET" \
+        --threads $(jq -r '.threads' "$CONFIG_FILE") \
+        --extensions "$(jq -r '.extensions | join(",")' "$CONFIG_FILE")" \
+        --output "$(jq -r '.output_dir' "$CONFIG_FILE")_bash"
+    
+    echo -e "${G}[${Y}✓${G}] ${W}Comprehensive scan completed${NC}"
+}
+
+# Setup configuration
+setup_config() {
+    echo -e "${Y}[${G}•${Y}] ${W}Configuration setup${NC}"
+    
+    if [[ -f "$CONFIG_FILE" ]]; then
+        echo -e "${Y}[${G}•${Y}] ${W}Current config found${NC}"
+        echo -ne "${B}[${Y}?${B}] ${W}Recreate config? (y/N): ${NC}"
+        read -r -n 1 recreate
+        echo ""
+        
+        if [[ "$recreate" =~ ^[Yy]$ ]]; then
+            create_config_template
+        fi
+    else
+        create_config_template
+    fi
+    
+    edit_config
+    echo -e "${G}[${Y}✓${G}] ${W}Configuration saved${NC}"
+}
+
+# Tool integration helper
+show_integrations() {
+    echo -e "${Y}[${G}•${Y}] ${W}Tool Integration Examples${NC}"
+    echo ""
+    echo -e "${W}╔══════════════════════════════════════════════════════════════════════╗${NC}"
+    echo -e "${W}║${G} Burp Suite Integration:${NC}                                            ${W}║${NC}"
+    echo -e "${W}║${Y}   ./gobl3d.sh --proxy http://127.0.0.1:8080${NC}                       ${W}║${NC}"
+    echo -e "${W}║${NC}                                                                      ${W}║${NC}"
+    echo -e "${W}║${G} ffuf Integration:${NC}                                                 ${W}║${NC}"
+    echo -e "${W}║${Y}   cat results/*/directories_*.txt | grep 'Status: 200' | \\${NC}        ${W}║${NC}"
+    echo -e "${W}║${Y}   cut -d' ' -f1 > dirs.txt && ffuf -u TARGET/FUZZ -w dirs.txt${NC}     ${W}║${NC}"
+    echo -e "${W}║${NC}                                                                      ${W}║${NC}"
+    echo -e "${W}║${G} Nuclei Integration:${NC}                                               ${W}║${NC}"
+    echo -e "${W}║${Y}   cat results/*/subdomains_*.txt > subs.txt${NC}                       ${W}║${NC}"
+    echo -e "${W}║${Y}   nuclei -l subs.txt -t /path/to/nuclei-templates/${NC}                ${W}║${NC}"
+    echo -e "${W}║${NC}                                                                      ${W}║${NC}"
+    echo -e "${W}║${G} Nmap Integration:${NC}                                                 ${W}║${NC}"
+    echo -e "${W}║${Y}   nmap -iL subs.txt -p- --min-rate 1000${NC}                           ${W}║${NC}"
+    echo -e "${W}║${NC}                                                                      ${W}║${NC}"
+    echo -e "${W}║${G} Custom Wordlist:${NC}                                                  ${W}║${NC}"
+    echo -e "${W}║${Y}   Edit config.json 'wordlists' array with custom paths${NC}            ${W}║${NC}"
+    echo -e "${W}╚══════════════════════════════════════════════════════════════════════╝${NC}"
+    echo ""
+    
+    # Create integration script
+    cat > "$SCRIPT_DIR/integrate.sh" << 'EOF'
+#!/bin/bash
+
+# gobl3d Integration Helper
+# Usage: ./integrate.sh [burp|ffuf|nuclei|nmap] [results_dir]
+
+TOOL="$1"
+RESULTS_DIR="$2"
+
+if [[ -z "$TOOL" || -z "$RESULTS_DIR" ]]; then
+    echo "Usage: $0 [burp|ffuf|nuclei|nmap] [results_dir]"
+    exit 1
+fi
+
+case "$TOOL" in
+    burp)
+        echo "Setting up Burp Suite proxy..."
+        echo "Configure Burp to listen on 127.0.0.1:8080"
+        echo "Run: ./gobl3d.sh with proxy option"
+        ;;
+    ffuf)
+        echo "Preparing ffuf input..."
+        find "$RESULTS_DIR" -name "directories_*.txt" -exec cat {} \; | \
+        grep "Status: 200" | cut -d' ' -f1 > ffuf_dirs.txt
+        echo "Generated: ffuf_dirs.txt"
+        echo "Run: ffuf -u TARGET/FUZZ -w ffuf_dirs.txt"
+        ;;
+    nuclei)
+        echo "Preparing Nuclei input..."
+        find "$RESULTS_DIR" -name "subdomains_*.txt" -exec cat {} \; > nuclei_targets.txt
+        echo "Generated: nuclei_targets.txt"
+        echo "Run: nuclei -l nuclei_targets.txt -t /path/to/templates"
+        ;;
+    nmap)
+        echo "Preparing Nmap input..."
+        find "$RESULTS_DIR" -name "subdomains_*.txt" -exec cat {} \; > nmap_targets.txt
+        echo "Generated: nmap_targets.txt"
+        echo "Run: nmap -iL nmap_targets.txt -p- --min-rate 1000"
+        ;;
+    *)
+        echo "Unknown tool: $TOOL"
+        exit 1
+        ;;
+esac
+EOF
+    
+    chmod +x "$SCRIPT_DIR/integrate.sh"
+    echo -e "${G}[${Y}✓${G}] ${W}Integration helper created: integrate.sh${NC}"
+    echo ""
+    echo -ne "${B}[${Y}?${B}] ${W}Press Enter to continue...${NC}"
+    read -r
+}
+
+# Main execution function
+main() {
+    # Detect system
+    detect_system
+    
+    # Show banner
+    show_banner
+    
+    # Install dependencies
+    install_dependencies
+    
+    # Compile Go module
+    compile_go_module
+    
+    # Make bash module executable
+    chmod +x "$BASH_MODULE"
+    
+    # Main loop
+    while true; do
+        show_banner
+        show_menu
+        
+        read -r -n 1 choice
+        echo ""
+        
+        case "$choice" in
+            1)
+                quick_recon
+                echo ""
+                echo -ne "${B}[${Y}?${B}] ${W}Press Enter to continue...${NC}"
+                read -r
+                ;;
+            2)
+                comprehensive_scan
+                echo ""
+                echo -ne "${B}[${Y}?${B}] ${W}Press Enter to continue...${NC}"
+                read -r
+                ;;
+            3)
+                setup_config
+                echo ""
+                echo -ne "${B}[${Y}?${B}] ${W}Press Enter to continue...${NC}"
+                read -r
+                ;;
+            4)
+                show_integrations
+                ;;
+            5)
+                echo -e "${Y}[${G}•${Y}] ${W}Exiting gobl3d...${NC}"
+                exit 0
+                ;;
+            *)
+                echo -e "${R}[${Y}!${R}] ${W}Invalid option${NC}"
+                sleep 1
+                ;;
+        esac
+    done
+}
+
+# Trap for cleanup
+trap 'echo -e "\n${Y}[${G}•${Y}] ${W}Cleaning up...${NC}"; exit 0' INT TERM
+
+# Check if running as main script
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+    main "$@"
+fi
