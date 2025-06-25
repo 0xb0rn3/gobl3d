@@ -16,8 +16,8 @@ NC='\033[0m'
 
 # Global variables
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-GO_MODULE="$SCRIPT_DIR/module.go"
-BASH_MODULE="$SCRIPT_DIR/module.bash"
+GO_MODULE="$SCRIPT_DIR/.module.go"
+BASH_MODULE="$SCRIPT_DIR/.module.bash"
 GO_BINARY="$SCRIPT_DIR/gobl3d"
 CONFIG_FILE="$SCRIPT_DIR/config.json"
 TARGET=""
